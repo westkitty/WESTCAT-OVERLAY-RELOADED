@@ -6,12 +6,11 @@ import os
 import time
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette
-from PySide6.QtWidgets import QApplication, QFileDialog, QLineEdit, QMenu
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, QEasingCurve, QPropertyAnimation, Property, QUrl
+from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPainterPath, QPalette, QShortcut, QDesktopServices
+from PySide6.QtWidgets import QApplication, QFileDialog, QLineEdit, QMenu, QMessageBox
 
 try:  # Optional sneeze sound
-    from PySide6.QtCore import QUrl
     from PySide6.QtMultimedia import QSoundEffect
 
     HAVE_SOUND = True
@@ -76,6 +75,15 @@ class PollOverlay(OverlayWindow):
         self._drag_origin_win: Optional[QPoint] = None
         self._drag_origin_mouse: Optional[QPoint] = None
         self._dev_panel = None
+        self._question_editor = None
+        self._drop_progress: float = 1.0
+        self._content_drop_anim: Optional[QPropertyAnimation] = None
+        self._tw_timer: Optional[QTimer] = None
+        self._tw_full_title: str = ""
+        self._tw_shown_title: str = ""
+        self._tw_active: bool = False
+        self._has_shown_once = False
+        self._tw_cps: int = 24
         if HAVE_SOUND:
             sneeze_path = os.path.join("assets", "sfx", "sneeze.wav")
             if os.path.exists(sneeze_path):
@@ -86,6 +94,7 @@ class PollOverlay(OverlayWindow):
                     self._sneeze = effect
                 except Exception:
                     self._sneeze = None
+        QShortcut(QKeySequence("Ctrl+D"), self, activated=self.open_dev_menu)
 
     # ---- helpers ----
     def _show_status(self, text: str, ms: int = 1200) -> None:
@@ -108,6 +117,9 @@ class PollOverlay(OverlayWindow):
         self._ack_scheduled = False
         if self.index >= len(self.questions):
             self.finish_time = time.perf_counter() * 1000.0 + 2000
+            self._stop_typewriter()
+        else:
+            self._start_typewriter_for_current()
         self.update()
 
     def _record(self, value: object) -> None:
@@ -216,6 +228,15 @@ class PollOverlay(OverlayWindow):
         self._dev_panel.show()
         self._dev_panel.raise_()
         self._dev_panel.activateWindow()
+        try:
+            self._dev_panel.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        except Exception:
+            self._dev_panel.setFocus()
+        if hasattr(self._dev_panel, "refresh_typing_speed"):
+            try:
+                self._dev_panel.refresh_typing_speed()
+            except Exception:
+                pass
 
     def trigger_dev(self) -> None:
         self._record("triggered")
@@ -335,14 +356,24 @@ class PollOverlay(OverlayWindow):
 
         current = self._current() or {}
         step_type = current.get("type", "mcq")
+        full_title = current.get("text", "").strip()
 
         painter.setFont(QFont("Monospace", 14))
         painter.setPen(QColor(32, 32, 32, 230))
-        title = current.get("text", "").strip()
-        text_rect = QRect(card_x + CARD_PAD, card_y + CARD_PAD, card_w - 2 * CARD_PAD, card_h)
-        text_rect = painter.boundingRect(text_rect, Qt.TextWordWrap, title)
-        painter.drawText(text_rect, Qt.TextWordWrap, title)
-        content_y = text_rect.bottom() + 16
+
+        if self._tw_active:
+            display_title = self._tw_shown_title
+        else:
+            if not self._tw_shown_title or self._tw_full_title != full_title:
+                self._tw_full_title = full_title
+                self._tw_shown_title = full_title
+            display_title = self._tw_shown_title
+
+        layout_title = full_title if full_title else " "
+        title_rect = QRect(card_x + CARD_PAD, card_y + CARD_PAD, card_w - 2 * CARD_PAD, card_h)
+        used_rect = painter.boundingRect(title_rect, Qt.TextWordWrap, layout_title)
+        content_y_base = used_rect.bottom() + 12
+        drop_offset = self._current_drop_offset()
 
         if step_type == "ack":
             delay = int(current.get("auto_ms", 2000))
@@ -356,34 +387,16 @@ class PollOverlay(OverlayWindow):
 
                 QTimer.singleShot(delay, _auto_advance)
 
+        painter.save()
+        painter.translate(0, drop_offset)
+        painter.drawText(used_rect, Qt.TextWordWrap, display_title if display_title else "")
+
         if step_type == "text":
-            if self._text_edit is None:
-                self._text_edit = QLineEdit(self)
-                self._text_edit.setPlaceholderText("Type your answer and press Enter…")
-                self._text_edit.returnPressed.connect(self._on_text_enter)
-                self._text_edit.raise_()
-                self._text_edit.show()
-                self._text_edit.setFocus()
-                self._text_edit.setStyleSheet(
-                    "QLineEdit{background:#ffffff; color:#222; border:1px solid rgba(0,0,0,60); padding:6px; border-radius:6px;}"
-                )
-                try:
-                    pal = self._text_edit.palette()
-                    pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(110, 110, 110))
-                    self._text_edit.setPalette(pal)
-                except Exception:
-                    pass
-            self._text_edit.setGeometry(
-                card_x + CARD_PAD,
-                card_y + CARD_PAD + 60,
-                card_w - 2 * CARD_PAD,
-                36,
-            )
             self.option_rects = []
         elif step_type == "mcq":
             painter.setFont(QFont("Monospace", 12))
             self.option_rects = []
-            y_pos = content_y
+            y_pos = content_y_base
             option_height = 36
             for idx, label in enumerate(current.get("choices", [])):
                 rect = QRect(card_x + CARD_PAD, y_pos, card_w - 2 * CARD_PAD, option_height)
@@ -396,7 +409,7 @@ class PollOverlay(OverlayWindow):
                     Qt.AlignVCenter | Qt.AlignLeft,
                     f"{idx + 1}. {label}",
                 )
-                self.option_rects.append(rect)
+                self.option_rects.append(rect.translated(0, drop_offset))
                 y_pos += option_height + LINE_SP
         else:
             self.option_rects = []
@@ -404,14 +417,187 @@ class PollOverlay(OverlayWindow):
         if self.status_msg and now_ms < self.status_until:
             painter.setFont(QFont("Monospace", 10))
             painter.setPen(QColor(40, 40, 40, 220))
-            painter.drawText(card_x + CARD_PAD, card_y + card_h - CARD_PAD, self.status_msg)
+            status_y = card_y + card_h - CARD_PAD
+            painter.drawText(card_x + CARD_PAD, status_y, self.status_msg)
         elif self.status_msg and now_ms >= self.status_until:
             self.status_msg = None
 
+        painter.restore()
+
+        if step_type == "text":
+            if self._text_edit is None:
+                self._text_edit = QLineEdit(self)
+                self._text_edit.setPlaceholderText("Type your answer and press Enter…")
+                self._text_edit.returnPressed.connect(self._on_text_enter)
+                self._text_edit.setStyleSheet(
+                    "QLineEdit{background:#ffffff; color:#222; border:1px solid rgba(0,0,0,60); padding:6px; border-radius:6px;}"
+                )
+                try:
+                    pal = self._text_edit.palette()
+                    pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(110, 110, 110))
+                    self._text_edit.setPalette(pal)
+                except Exception:
+                    pass
+            self._text_edit.show()
+            self._text_edit.raise_()
+            self._text_edit.setFocus()
+            line_edit_height = 36
+            input_top_base = max(content_y_base, card_y + CARD_PAD)
+            max_top = card_y + card_h - CARD_PAD - line_edit_height
+            input_top_base = max(card_y + CARD_PAD, min(input_top_base, max_top))
+            actual_top = input_top_base + drop_offset
+            self._text_edit.setGeometry(
+                card_x + CARD_PAD,
+                actual_top,
+                card_w - 2 * CARD_PAD,
+                line_edit_height,
+            )
+            self._text_edit.raise_()
+        else:
+            if self._text_edit is not None:
+                self._text_edit.hide()
+
         painter.end()
+
+    def _current_drop_offset(self) -> int:
+        return -int((1.0 - float(self._drop_progress)) * 40)
+
+    def _get_drop_progress(self) -> float:
+        return float(self._drop_progress)
+
+    def _set_drop_progress(self, value: float) -> None:
+        self._drop_progress = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    dropProgress = Property(float, _get_drop_progress, _set_drop_progress)  # type: ignore[assignment]
+
+    def start_drop_animation(self, duration_ms: int = 800) -> None:
+        if self._content_drop_anim is not None and self._content_drop_anim.state() == QPropertyAnimation.Running:
+            self._content_drop_anim.stop()
+        anim = QPropertyAnimation(self, b"dropProgress", self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(max(0, int(duration_ms)))
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._content_drop_anim = anim
+        self._drop_progress = 0.0
+        self._start_typewriter_for_current()
+        anim.start()
+
+    # ---- typewriter helpers ----
+    def _current_title_text(self) -> str:
+        cur = self._current()
+        if not cur:
+            return ""
+        return str(cur.get("text", "")).strip()
+
+    def _ensure_typewriter_timer(self) -> None:
+        if self._tw_timer is None:
+            self._tw_timer = QTimer(self)
+            self._tw_timer.timeout.connect(self._tw_tick)
+
+    def _start_typewriter_for_current(self) -> None:
+        self._ensure_typewriter_timer()
+        if self._tw_timer.isActive():
+            self._tw_timer.stop()
+        text = self._current_title_text()
+        if not text:
+            self._tw_full_title = ""
+            self._tw_shown_title = ""
+            self._tw_active = False
+            return
+        self._tw_full_title = text
+        self._tw_shown_title = ""
+        self._tw_active = True
+        interval = max(10, int(1000 / max(5, self._tw_cps)))
+        self._tw_timer.start(interval)
+        self.update()
+
+    def _stop_typewriter(self) -> None:
+        if self._tw_timer and self._tw_timer.isActive():
+            self._tw_timer.stop()
+        full = self._current_title_text()
+        self._tw_full_title = full
+        self._tw_shown_title = full
+        self._tw_active = False
+        self.update()
+
+    def _tw_tick(self) -> None:
+        if not self._tw_active:
+            if self._tw_timer and self._tw_timer.isActive():
+                self._tw_timer.stop()
+            return
+        if len(self._tw_shown_title) >= len(self._tw_full_title):
+            self._stop_typewriter()
+            return
+        next_char = self._tw_full_title[len(self._tw_shown_title)]
+        self._tw_shown_title += next_char
+        self.update()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not self._has_shown_once:
+            self._has_shown_once = True
+            self._start_typewriter_for_current()
+
+    def set_typewriter_cps(self, cps: int) -> None:
+        self._tw_cps = max(5, int(cps))
+        self._start_typewriter_for_current()
+        if self._dev_panel and hasattr(self._dev_panel, "refresh_typing_speed"):
+            try:
+                self._dev_panel.refresh_typing_speed()
+            except Exception:
+                pass
+
+    def get_typewriter_cps(self) -> int:
+        return int(self._tw_cps)
 
     def set_peer(self, peer_widget) -> None:
         self._peer = peer_widget
+
+    # ---- Dev menu helpers exposed to DevPanel ----
+    def open_question_editor(self) -> None:
+        try:
+            from .question_editor import QuestionEditor
+
+            editor = QuestionEditor(
+                json_path="assets/demo/bryan_demo.json",
+                text_fallback="assets/demo/BryanDemoConversation.txt",
+            )
+            editor.show()
+            editor.raise_()
+            editor.activateWindow()
+            self._question_editor = editor
+            return
+        except Exception as primary_exc:
+            try:
+                from .quick_question_editor import QuickQuestionEditor
+
+                editor = QuickQuestionEditor(self, demo_txt_path="assets/demo/BryanDemoConversation.txt")
+                editor.show()
+                editor.raise_()
+                editor.activateWindow()
+                self._question_editor = editor
+                return
+            except Exception as fallback_exc:  # pragma: no cover - user-triggered
+                QMessageBox.critical(
+                    self,
+                    "Question Editor",
+                    f"Could not open any editor:\n{primary_exc}\n{fallback_exc}",
+                )
+
+    def choose_results_folder(self) -> None:
+        self._prompt_export_dir()
+
+    def open_results_folder(self) -> None:
+        folder = self._export_dir
+        if not folder:
+            raise RuntimeError("No results folder set.")
+        path = os.path.abspath(folder)
+        if not os.path.isdir(path):
+            raise RuntimeError(f"Folder does not exist yet: {path}")
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+            raise RuntimeError("Unable to open folder with system handler.")
 
     def contextMenuEvent(self, event) -> None:  # type: ignore[override]
         menu = QMenu(self)

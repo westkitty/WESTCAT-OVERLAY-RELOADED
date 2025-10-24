@@ -16,6 +16,9 @@ from PySide6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
+    QMessageBox,
+    QRadioButton,
+    QButtonGroup,
 )
 
 
@@ -23,7 +26,8 @@ class DevPanel(QWidget):
     """Lightweight developer control panel."""
 
     def __init__(self, poll_overlay) -> None:
-        super().__init__(flags=Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+        super().__init__(poll_overlay)
+        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.poll = poll_overlay
         self.setWindowTitle("WESTCAT — Dev Menu")
@@ -64,14 +68,36 @@ class DevPanel(QWidget):
         self.speed_slider.setValue(100)
         row2.addWidget(self.speed_slider)
 
-        buttons = QHBoxLayout()
-        layout.addLayout(buttons)
+        button_grid = QVBoxLayout()
+        layout.addLayout(button_grid)
+
+        row_actions = QHBoxLayout()
         self.btn_edit = QPushButton("Edit Questions…")
-        self.btn_results = QPushButton("Choose Results Folder…")
+        self.btn_results_view = QPushButton("Results So Far")
+        for btn in (self.btn_edit, self.btn_results_view):
+            btn.setMinimumWidth(180)
+            row_actions.addWidget(btn)
+        button_grid.addLayout(row_actions)
+
+        row_actions2 = QHBoxLayout()
+        self.btn_choose = QPushButton("Choose Results Folder…")
         self.btn_export = QPushButton("Export Now")
-        buttons.addWidget(self.btn_edit)
-        buttons.addWidget(self.btn_results)
-        buttons.addWidget(self.btn_export)
+        for btn in (self.btn_choose, self.btn_export):
+            btn.setMinimumWidth(180)
+            row_actions2.addWidget(btn)
+        button_grid.addLayout(row_actions2)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Typing Speed:", self))
+        self.rb12 = QRadioButton("12 cps", self)
+        self.rb24 = QRadioButton("24 cps", self)
+        self.rb48 = QRadioButton("48 cps", self)
+        self._cps_group = QButtonGroup(self)
+        for rb in (self.rb12, self.rb24, self.rb48):
+            self._cps_group.addButton(rb)
+            speed_row.addWidget(rb)
+        speed_row.addStretch(1)
+        layout.addLayout(speed_row)
 
         layout.addStretch(1)
 
@@ -81,10 +107,17 @@ class DevPanel(QWidget):
         self.btn_close = QPushButton("Close")
         close_row.addWidget(self.btn_close)
 
-        self.btn_edit.clicked.connect(self.open_editor)
-        self.btn_results.clicked.connect(self.choose_folder)
-        self.btn_export.clicked.connect(self.export_now)
+        self.btn_edit.clicked.connect(self._edit_safe)
+        self.btn_results_view.clicked.connect(self._open_results_folder_safe)
+        self.btn_choose.clicked.connect(self._choose_folder_safe)
+        self.btn_export.clicked.connect(self._export_safe)
         self.btn_close.clicked.connect(self.close)
+
+        cps = getattr(self.poll, "get_typewriter_cps", lambda: 24)()
+        self._apply_typing_selection(cps)
+        self.rb12.toggled.connect(lambda checked: checked and self._set_typing_speed(12))
+        self.rb24.toggled.connect(lambda checked: checked and self._set_typing_speed(24))
+        self.rb48.toggled.connect(lambda checked: checked and self._set_typing_speed(48))
 
     def open_editor(self) -> None:
         from .question_editor import QuestionEditor
@@ -105,3 +138,62 @@ class DevPanel(QWidget):
 
     def export_now(self) -> None:
         self.poll.export_now()
+
+    # ---- safe wrappers for parent hooks ----
+    def _edit_safe(self) -> None:
+        handler = getattr(self.poll, "open_question_editor", None)
+        if callable(handler):
+            try:
+                handler()
+                return
+            except Exception as exc:
+                QMessageBox.warning(self, "Question Editor", f"Could not open question editor:\n{exc}")
+        self.open_editor()
+
+    def _choose_folder_safe(self) -> None:
+        handler = getattr(self.poll, "choose_results_folder", None)
+        if callable(handler):
+            try:
+                handler()
+                return
+            except Exception as exc:
+                QMessageBox.warning(self, "Results Folder", f"Could not choose folder:\n{exc}")
+                return
+        self.choose_folder()
+
+    def _open_results_folder_safe(self) -> None:
+        handler = getattr(self.poll, "open_results_folder", None)
+        if callable(handler):
+            try:
+                handler()
+                return
+            except Exception as exc:
+                QMessageBox.warning(self, "Results", f"Could not open results folder:\n{exc}")
+                return
+        QMessageBox.information(self, "Results", "No results folder set yet.")
+
+    def _export_safe(self) -> None:
+        handler = getattr(self.poll, "export_now", None)
+        if callable(handler):
+            try:
+                handler()
+                return
+            except Exception as exc:
+                QMessageBox.critical(self, "Export Failed", f"Export crashed:\n{exc}")
+
+    def _set_typing_speed(self, cps: int) -> None:
+        handler = getattr(self.poll, "set_typewriter_cps", None)
+        if callable(handler):
+            handler(int(cps))
+
+    def _apply_typing_selection(self, cps: int) -> None:
+        if cps <= 12:
+            self.rb12.setChecked(True)
+        elif cps >= 48:
+            self.rb48.setChecked(True)
+        else:
+            self.rb24.setChecked(True)
+
+    def refresh_typing_speed(self) -> None:
+        cps = getattr(self.poll, "get_typewriter_cps", lambda: 24)()
+        self._apply_typing_selection(cps)

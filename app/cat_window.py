@@ -6,7 +6,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QTransform
-from PySide6.QtWidgets import QApplication, QLabel, QHBoxLayout, QMenu, QSlider, QWidget, QWidgetAction
+from PySide6.QtWidgets import QApplication, QMenu, QSlider, QWidget, QWidgetAction
 
 SIZE_PRESETS = {"S": (360, 360), "M": (540, 540), "L": (720, 720)}
 
@@ -100,16 +100,10 @@ class CatWindow(QWidget):
             self._clicks_ms.append(now)
             self._clicks_ms = [t for t in self._clicks_ms if now - t <= 1200]
             if len(self._clicks_ms) >= 5:
-                handled = False
-                if self._dev_menu_cb:
+                target = self._on_five or self._dev_menu_cb
+                if target:
                     try:
-                        self._dev_menu_cb()
-                        handled = True
-                    except Exception:
-                        handled = False
-                if not handled and self._on_five:  # fallback to shared hook
-                    try:
-                        self._on_five()
+                        target()
                     except Exception:
                         pass
                 self._clicks_ms.clear()
@@ -163,19 +157,24 @@ class CatWindow(QWidget):
             action = size_menu.addAction(label)
             action.triggered.connect(lambda _=False, k=label: self.set_cat_size(k))
 
+        # Labeled opacity slider for the cat
         menu.addSeparator()
-        opacity_row = QWidget(menu)
-        layout = QHBoxLayout(opacity_row)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(8)
-        layout.addWidget(QLabel("Opacity (Cat)", opacity_row))
-        slider = QSlider(Qt.Horizontal, opacity_row)
-        slider.setRange(30, 100)
+        from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+
+        row = QWidget(menu)
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(8, 4, 8, 4)
+        hl.setSpacing(8)
+        lbl = QLabel("Opacity (Cat)", row)
+        slider = QSlider(Qt.Horizontal, row)
+        slider.setMinimum(30)
+        slider.setMaximum(100)
         slider.setValue(max(30, min(100, int(round(self._alpha * 100)))))
         slider.setFixedWidth(160)
-        layout.addWidget(slider, 1)
+        hl.addWidget(lbl)
+        hl.addWidget(slider, 1)
         slider_action = QWidgetAction(menu)
-        slider_action.setDefaultWidget(opacity_row)
+        slider_action.setDefaultWidget(row)
         menu.addAction(slider_action)
         slider.valueChanged.connect(lambda value: self.set_global_opacity(value / 100.0))
 
@@ -185,16 +184,17 @@ class CatWindow(QWidget):
         flip_action.setChecked(self._flip)
         flip_action.triggered.connect(lambda checked: (setattr(self, "_flip", bool(checked)), self.update()))
 
-        if self._dev_menu_cb:
-            dev_action = menu.addAction("Open Dev Menu")
+        dev_action = menu.addAction("Open Dev Menu")
 
-            def _open_dev_menu() -> None:
+        def _open_dev_menu() -> None:
+            target = self._on_five or self._dev_menu_cb
+            if target:
                 try:
-                    self._dev_menu_cb()
+                    target()
                 except Exception:
                     pass
 
-            dev_action.triggered.connect(_open_dev_menu)
+        dev_action.triggered.connect(_open_dev_menu)
 
         close_action = menu.addAction("Close both")
 

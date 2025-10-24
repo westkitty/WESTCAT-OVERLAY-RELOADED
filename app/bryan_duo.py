@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPropertyAnimation, QPoint, QTimer, QEasingCurve
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QTimer, QRect
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication
 
 from .cat_window import CatWindow
@@ -12,40 +12,39 @@ def main() -> None:
     app = QApplication.instance() or QApplication([])
 
     bubble = PollOverlay(source_path="assets/demo/BryanDemoConversation.txt")
-    cat = CatWindow(on_five_clicks=bubble.export_and_close, size=(360, 360))
+    bubble.hide()  # start hidden; we'll animate its content after placement
+    cat = CatWindow(on_five_clicks=bubble.open_dev_menu, size=(360, 360))
     cat.set_peer(bubble)
     bubble.set_peer(cat)
-    cat.set_dev_menu_callback(bubble.open_dev_menu)
+    cat.set_dev_menu_callback(lambda: bubble.open_dev_menu())
     cat.show()
+    QApplication.processEvents()  # ensure cat geometry is current before reading it
+
+    # Safety shortcut: Ctrl+D opens Dev Menu from either window
+    QShortcut(QKeySequence("Ctrl+D"), cat, activated=bubble.open_dev_menu)
+    QShortcut(QKeySequence("Ctrl+D"), bubble, activated=bubble.open_dev_menu)
 
     def show_bubble() -> None:
-        screen = QGuiApplication.primaryScreen().availableGeometry()
-        cat_width, cat_height = cat.width(), cat.height()
-        bubble_width, bubble_height = 520, 320
-        right_x = cat.x() + cat_width + 16
-        left_x = cat.x() - bubble_width - 16
-        by = max(screen.y() + 8, min(cat.y(), screen.bottom() - bubble_height - 8))
-        if right_x + bubble_width <= screen.right() - 8:
-            bx = right_x
-        elif left_x >= screen.left() + 8:
-            bx = left_x
-        else:
-            bx = max(screen.x() + 8, min(cat.x() + cat_width // 2 - bubble_width // 2, screen.right() - bubble_width - 8))
+        screen_obj = cat.screen() or QApplication.primaryScreen()
+        screen = screen_obj.availableGeometry()
+        cat_rect = QRect(cat.x(), cat.y(), cat.width(), cat.height())
+        bw, bh = 600, 360
 
-        bubble.resize(bubble_width, bubble_height)
-        start_y = screen.y() - bubble_height - 20
-        bubble.move(bx, start_y)
+        desired_x = cat_rect.right() + 200
+        desired_y = cat_rect.top() - 200
+        bx = min(max(desired_x, screen.left() + 8), screen.right() - bw - 8)
+        by = min(max(desired_y, screen.top() + 8), screen.bottom() - bh - 8)
+        if QRect(bx, by, bw, bh).intersects(cat_rect):
+            bx = min(max(cat_rect.left() - 200 - bw, screen.left() + 8), screen.right() - bw - 8)
+        if QRect(bx, by, bw, bh).intersects(cat_rect):
+            by = screen.top() + 8
+
+        bubble.resize(bw, bh)
+        bubble.move(bx, by)
         bubble.show()
         bubble.raise_()
 
-        bubble._drop_anim = QPropertyAnimation(bubble, b"pos")  # type: ignore[attr-defined]
-        bubble._drop_anim.setStartValue(QPoint(bx, start_y))
-        bubble._drop_anim.setEndValue(QPoint(bx, by))
-        bubble._drop_anim.setDuration(700)
-        bubble._drop_anim.setEasingCurve(QEasingCurve.OutCubic)
-        bubble._drop_anim.start()
-
-    QTimer.singleShot(850, show_bubble)
+    QTimer.singleShot(300, show_bubble)
 
     app.exec()
 

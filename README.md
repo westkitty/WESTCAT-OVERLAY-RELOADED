@@ -37,7 +37,10 @@ The stub prints `BOOTSTRAP_OK` and environment metadata. Use the provided VS Cod
 ## Phase 3C — Bryan Duo Demo (Cat + Bubble)
 - Task: **Run: WESTCAT overlay (Bryan duo demo)**
 - Two windows: a transparent **Cat** and a **Speech Bubble** (questions).
-- Cat appears first; the Bubble appears slightly later **beside** the Cat (no overlap).
+- Cat appears first; ~0.3s later the Bubble appears up-and-to-the-right (~200 px, flips left if needed) without any drop animation.
+- Bubble questions type in with a lightweight typewriter animation.
+- In the **Dev Menu**, adjust **Typing Speed** (12/24/48 cps) to tweak the typewriter pacing.
+- Press **Ctrl+D** from Cat or Bubble to open the **Dev Menu** anytime.
 - Drag either window by holding the left mouse button anywhere that isn't a button/choice.
 - Answer MCQs by clicking or pressing **1–4**. For text, **type in the box and press Enter**.
 - At the final screen, **click the Cat five times quickly** to open the **Dev Menu**.
