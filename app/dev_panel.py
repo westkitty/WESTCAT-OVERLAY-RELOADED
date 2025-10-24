@@ -4,12 +4,11 @@ import json
 import os
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -19,6 +18,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QRadioButton,
     QButtonGroup,
+    QScrollArea,
+    QComboBox,
 )
 
 
@@ -31,10 +32,22 @@ class DevPanel(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.poll = poll_overlay
         self.setWindowTitle("WESTCAT — Dev Menu")
-        self.setFixedSize(420, 300)
+        self.resize(520, 640)
+        self.setMinimumSize(480, 600)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        root.addWidget(scroll)
+
+        content = QWidget(self)
+        scroll.setWidget(content)
+
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(10)
         self.setStyleSheet(
             """
             QWidget#Card { background: rgba(255,255,255,240); border: 1px solid rgba(0,0,0,60); border-radius: 14px; }
@@ -44,7 +57,7 @@ class DevPanel(QWidget):
         )
 
         card = QWidget(objectName="Card")
-        root.addWidget(card)
+        lay.addWidget(card)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -82,7 +95,8 @@ class DevPanel(QWidget):
         row_actions2 = QHBoxLayout()
         self.btn_choose = QPushButton("Choose Results Folder…")
         self.btn_export = QPushButton("Export Now")
-        for btn in (self.btn_choose, self.btn_export):
+        self.btn_builder = QPushButton("Cluster Builder…")
+        for btn in (self.btn_choose, self.btn_export, self.btn_builder):
             btn.setMinimumWidth(180)
             row_actions2.addWidget(btn)
         button_grid.addLayout(row_actions2)
@@ -99,6 +113,54 @@ class DevPanel(QWidget):
         speed_row.addStretch(1)
         layout.addLayout(speed_row)
 
+        try:
+            anim_row = QHBoxLayout()
+            btn_playpause = QPushButton("Play/Pause")
+            btn_step = QPushButton("Step")
+            anim_row.addWidget(btn_playpause)
+            anim_row.addWidget(btn_step)
+            layout.addLayout(anim_row)
+
+            self.cmb_cluster = QComboBox(self)
+            self.cmb_cluster.setMinimumWidth(200)
+            anim_select = QHBoxLayout()
+            anim_select.addWidget(QLabel("Cluster:", self))
+            anim_select.addWidget(self.cmb_cluster, 1)
+            layout.addLayout(anim_select)
+
+            def _cat():
+                return getattr(self.poll, "_peer", None)
+
+            try:
+                cat = _cat()
+                names = cat.anim_list_clusters() if cat and hasattr(cat, "anim_list_clusters") else []
+                for name in names:
+                    self.cmb_cluster.addItem(name)
+            except Exception:
+                pass
+
+            def _playpause():
+                cat = _cat()
+                if cat and hasattr(cat, "anim_pause_toggle"):
+                    cat.anim_pause_toggle()
+
+            def _step_once():
+                cat = _cat()
+                if cat and hasattr(cat, "anim_pause_toggle"):
+                    cat.anim_pause_toggle()
+                    QTimer.singleShot(120, lambda: (hasattr(cat, "anim_pause_toggle") and cat.anim_pause_toggle()))
+
+            def _set_cluster(name: str):
+                cat = _cat()
+                if cat and hasattr(cat, "anim_set_cluster"):
+                    cat.anim_set_cluster(name)
+
+            btn_playpause.clicked.connect(_playpause)
+            btn_step.clicked.connect(_step_once)
+            self.cmb_cluster.currentTextChanged.connect(_set_cluster)
+        except Exception:
+            pass
+
         layout.addStretch(1)
 
         close_row = QHBoxLayout()
@@ -112,6 +174,7 @@ class DevPanel(QWidget):
         self.btn_choose.clicked.connect(self._choose_folder_safe)
         self.btn_export.clicked.connect(self._export_safe)
         self.btn_close.clicked.connect(self.close)
+        self.btn_builder.clicked.connect(self._open_cluster_builder)
 
         cps = getattr(self.poll, "get_typewriter_cps", lambda: 24)()
         self._apply_typing_selection(cps)
@@ -197,3 +260,20 @@ class DevPanel(QWidget):
     def refresh_typing_speed(self) -> None:
         cps = getattr(self.poll, "get_typewriter_cps", lambda: 24)()
         self._apply_typing_selection(cps)
+
+    def _open_cluster_builder(self) -> None:
+        try:
+            from tools.cluster_builder import ClusterBuilder
+
+            builder = ClusterBuilder()
+            builder.show()
+            builder.raise_()
+            builder.activateWindow()
+            self._builder = builder
+        except Exception as exc:
+            try:
+                self.btn_builder.setEnabled(False)
+                self.btn_builder.setToolTip(f"Cluster Builder unavailable:\n{exc}")
+            except Exception:
+                pass
+            QMessageBox.critical(self, "Cluster Builder", f"Could not open:\n{exc}")

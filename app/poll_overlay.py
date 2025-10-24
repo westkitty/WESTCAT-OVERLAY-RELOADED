@@ -84,6 +84,7 @@ class PollOverlay(OverlayWindow):
         self._tw_active: bool = False
         self._has_shown_once = False
         self._tw_cps: int = 24
+        self._idle_delay: Optional[QTimer] = None
         if HAVE_SOUND:
             sneeze_path = os.path.join("assets", "sfx", "sneeze.wav")
             if os.path.exists(sneeze_path):
@@ -107,6 +108,35 @@ class PollOverlay(OverlayWindow):
             return self.questions[self.index]
         return None
 
+    def notify_state(self, state: str) -> None:
+        try:
+            cat = getattr(self, "_peer", None)
+            if not cat:
+                return
+            if hasattr(cat, "notify_state"):
+                cat.notify_state(state)
+                return
+            if not hasattr(cat, "anim_set_cluster"):
+                return
+            from app.anim.cluster_sync import STATE_TO_CLUSTER
+            cluster = STATE_TO_CLUSTER.get(state)
+            if not cluster:
+                return
+            cat.anim_set_cluster(cluster)
+        except Exception:
+            pass
+
+    def _set_idle_state(self) -> None:
+        self.notify_state("idle")
+
+    def _queue_idle(self, delay_ms: int = 400) -> None:
+        if self._idle_delay is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._set_idle_state)
+            self._idle_delay = timer
+        self._idle_delay.start(max(0, delay_ms))
+
     def _advance(self) -> None:
         if self._text_edit is not None:
             self._text_edit.deleteLater()
@@ -118,6 +148,7 @@ class PollOverlay(OverlayWindow):
         if self.index >= len(self.questions):
             self.finish_time = time.perf_counter() * 1000.0 + 2000
             self._stop_typewriter()
+            self.notify_state("finish")
         else:
             self._start_typewriter_for_current()
         self.update()
@@ -222,16 +253,23 @@ class PollOverlay(OverlayWindow):
         self.open_dev_menu()
 
     def open_dev_menu(self) -> None:
-        from .dev_panel import DevPanel
-        if self._dev_panel is None:
-            self._dev_panel = DevPanel(self)
-        self._dev_panel.show()
-        self._dev_panel.raise_()
-        self._dev_panel.activateWindow()
         try:
-            self._dev_panel.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-        except Exception:
-            self._dev_panel.setFocus()
+            from .dev_panel import DevPanel
+
+            if self._dev_panel is None:
+                self._dev_panel = DevPanel(self)
+            self._dev_panel.show()
+            self._dev_panel.raise_()
+            self._dev_panel.activateWindow()
+            try:
+                self._dev_panel.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+            except Exception:
+                self._dev_panel.setFocus()
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(self, "Developer Panel", f"Could not open Dev Menu:\n{exc}")
+            self._dev_panel = None
         if hasattr(self._dev_panel, "refresh_typing_speed"):
             try:
                 self._dev_panel.refresh_typing_speed()
@@ -512,6 +550,10 @@ class PollOverlay(OverlayWindow):
         interval = max(10, int(1000 / max(5, self._tw_cps)))
         self._tw_timer.start(interval)
         self.update()
+        try:
+            self.notify_state("advance")
+        except Exception:
+            pass
 
     def _stop_typewriter(self) -> None:
         if self._tw_timer and self._tw_timer.isActive():
@@ -554,6 +596,7 @@ class PollOverlay(OverlayWindow):
 
     def set_peer(self, peer_widget) -> None:
         self._peer = peer_widget
+        self.notify_state("idle")
 
     # ---- Dev menu helpers exposed to DevPanel ----
     def open_question_editor(self) -> None:
@@ -626,6 +669,7 @@ class PollOverlay(OverlayWindow):
 
     def _export_results(self) -> None:
         try:
+            self.notify_state("results")
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             lines: List[str] = []
             for idx, step in enumerate(self.questions):

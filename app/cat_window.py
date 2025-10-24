@@ -2,11 +2,233 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, List
 
-from PySide6.QtCore import QPoint, QSize, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QTransform
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QTransform, QKeySequence, QShortcut
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QMenu, QSlider, QWidget, QWidgetAction
+
+try:
+    from app.anim.cluster_sync import Animator, try_load_or_default
+except Exception:  # pragma: no cover - animation optional
+    Animator = None  # type: ignore[assignment]
+
+class _CatAnimatorDriver:
+    def __init__(self, widget: "CatWindow") -> None:
+        self._widget = widget
+        self._anim: Optional[Animator] = None
+        self._timer: Optional[QTimer] = None
+        self._oneshot_timer: Optional[QTimer] = None
+        self._last_path: Optional[str] = None
+        self._ui_fps = 30
+        self._fallback_svg = "assets/cat/cat.svg"
+        self._builder = None
+        self._idle_names: List[str] = []
+        self._celebrate_names: List[str] = []
+        self._finish_names: List[str] = []
+        self._phone_names: List[str] = []
+        self._random_action_names: List[str] = []
+        self._excluded_random = {"arrive", "leaving", "leave", "forwardyawn", "forward_yawn", "open"}
+        self._played_arrive = False
+        if Animator is None:
+            return
+        clusters = try_load_or_default("assets/cat/clusters.json")
+        self._anim = Animator(clusters)
+        self._categorize_clusters()
+        self._anim.play()
+        self._ensure_timer()
+
+        arrive_name = self._find_cluster_name("arrive")
+        if arrive_name and not self._played_arrive:
+            self._played_arrive = True
+            self._play_one_shot(arrive_name, self._cluster_duration_ms(arrive_name))
+        else:
+            self._select_idle()
+
+        try:
+            shortcut = QShortcut(QKeySequence("Ctrl+Shift+B"), self._widget)
+            shortcut.activated.connect(self._open_cluster_builder)
+            dev_shortcut = QShortcut(QKeySequence("F12"), self._widget)
+            dev_shortcut.activated.connect(lambda: (self._widget._dev_menu_cb and self._widget._dev_menu_cb()))
+        except Exception:
+            pass
+
+    def _ensure_timer(self) -> None:
+        if self._timer or self._anim is None:
+            return
+        self._timer = QTimer(self._widget)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(int(1000 / max(1, self._ui_fps)))
+
+    def _tick(self) -> None:
+        if self._anim is None:
+            return
+        frame = self._anim.tick()
+        if not frame:
+            return
+        path = frame.frame_path
+        if path == self._last_path:
+            return
+        try:
+            pix = self._anim.load_pixmap(frame)
+        except Exception:
+            pix = QPixmap()
+        if not pix.isNull():
+            self._widget.set_cat_pixmap(pix)
+            self._last_path = path
+            return
+        if self._render_svg_fallback():
+            self._last_path = f"svg:{self._fallback_svg}"
+
+    def _render_svg_fallback(self) -> bool:
+        if not self._fallback_svg or not os.path.exists(self._fallback_svg):
+            return False
+        renderer = QSvgRenderer(self._fallback_svg)
+        if not renderer.isValid():
+            return False
+        size = self._widget.size()
+        if not size.isValid() or size.isEmpty():
+            size = QSize(360, 360)
+        pix = QPixmap(size)
+        pix.fill(Qt.transparent)
+        painter = QPainter(pix)
+        renderer.render(painter)
+        painter.end()
+        self._widget.set_cat_pixmap(pix)
+        return True
+
+    def _categorize_clusters(self) -> None:
+        if not self._anim:
+            return
+        names = list(self._anim.clusters.keys())
+        lowers = {n: n.lower() for n in names}
+        self._idle_names = [n for n, l in lowers.items() if l.startswith("idle")]
+        self._celebrate_names = [n for n, l in lowers.items() if any(k in l for k in ("clap", "happy", "sparkle", "celebrate", "excited"))]
+        self._finish_names = [n for n, l in lowers.items() if any(k in l for k in ("finish", "goodbye", "leave", "leaving"))]
+        self._phone_names = [n for n, l in lowers.items() if any(k in l for k in ("phone", "clipboard"))]
+        self._random_action_names = [
+            n for n, l in lowers.items()
+            if not l.startswith("idle") and l not in self._excluded_random
+        ]
+
+    def _find_cluster_name(self, target: str) -> Optional[str]:
+        if not self._anim:
+            return None
+        target = target.lower()
+        for name in self._anim.clusters.keys():
+            if name.lower() == target:
+                return name
+        return None
+
+    def _cluster_duration_ms(self, name: str) -> int:
+        if not self._anim:
+            return 1200
+        spec = self._anim.clusters.get(name)
+        if not spec:
+            return 1200
+        if spec.loop:
+            return 1200
+        frame_count = max(1, len(spec.frames))
+        fps = max(1e-6, spec.fps)
+        base = int(frame_count / fps * 1000)
+        return max(400, min(4000, base + int(spec.hold_last_ms)))
+
+    def _select_idle(self) -> None:
+        if not self._anim:
+            return
+        self._categorize_clusters()
+        choices = self._idle_names or list(self._anim.clusters.keys())
+        if not choices:
+            return
+        if len(choices) == 1:
+            target = choices[0]
+        else:
+            from random import choice
+
+            target = choice(choices)
+        self._anim.set_cluster(target)
+
+    def _play_one_shot(self, name: str, duration_ms: Optional[int] = None) -> None:
+        if not self._anim:
+            return
+        self._anim.set_cluster(name)
+        if self._oneshot_timer:
+            self._oneshot_timer.stop()
+        timer = QTimer(self._widget)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._select_idle)
+        timer.start(duration_ms or self._cluster_duration_ms(name))
+        self._oneshot_timer = timer
+
+    def _play_from_list(self, names: List[str]) -> None:
+        if not names:
+            self._select_idle()
+            return
+        from random import choice
+
+        name = choice(names)
+        self._play_one_shot(name)
+
+    def _play_random_action(self) -> None:
+        self._categorize_clusters()
+        if not self._random_action_names:
+            return
+        from random import choice
+
+        name = choice(self._random_action_names)
+        self._play_one_shot(name)
+
+    def handle_state(self, state: str) -> None:
+        if not self._anim:
+            return
+        self._categorize_clusters()
+        s = (state or "").lower()
+        if s in ("idle", "on_open"):
+            self._select_idle()
+            return
+        if s in ("advance", "next_question", "question_advance"):
+            self._play_random_action()
+            return
+        if s in ("celebrate", "result", "results"):
+            self._play_from_list(self._celebrate_names)
+            return
+        if s in ("finish", "goodbye"):
+            self._play_from_list(self._finish_names)
+            return
+        if s in ("phone", "clipboard"):
+            self._play_from_list(self._phone_names)
+            return
+
+    def toggle_pause(self) -> None:
+        if self._anim:
+            self._anim.toggle_paused()
+
+    def set_cluster(self, name: str) -> None:
+        if self._anim:
+            self._anim.set_cluster(name)
+
+    def set_fps_override(self, fps: Optional[float]) -> None:
+        if self._anim:
+            self._anim.set_fps_override(fps)
+
+    def list_clusters(self) -> List[str]:
+        if self._anim:
+            return list(self._anim.clusters.keys())
+        return []
+
+    def _open_cluster_builder(self) -> None:
+        try:
+            from tools.cluster_builder import ClusterBuilder
+
+            builder = ClusterBuilder()
+            builder.show()
+            builder.raise_()
+            builder.activateWindow()
+            self._builder = builder  # keep reference
+        except Exception:
+            pass
+
 
 SIZE_PRESETS = {"S": (360, 360), "M": (540, 540), "L": (720, 720)}
 
@@ -57,6 +279,12 @@ class CatWindow(QWidget):
             except Exception:
                 self._pixmap = None
 
+        self._anim_driver: Optional[_CatAnimatorDriver] = None
+        try:
+            self._anim_driver = _CatAnimatorDriver(self)
+        except Exception:
+            self._anim_driver = None
+
     def set_peer(self, peer_widget) -> None:
         self._peer = peer_widget
 
@@ -70,6 +298,10 @@ class CatWindow(QWidget):
     def set_global_opacity(self, alpha: float) -> None:
         self._alpha = max(0.3, min(1.0, float(alpha)))
         self.setWindowOpacity(self._alpha)
+        self.update()
+
+    def set_cat_pixmap(self, pixmap: QPixmap) -> None:
+        self._pixmap = pixmap
         self.update()
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
@@ -204,6 +436,28 @@ class CatWindow(QWidget):
         close_action.triggered.connect(do_close)
 
         menu.exec(event.globalPos())
+
+    # Animation control surface (best-effort)
+    def anim_pause_toggle(self) -> None:
+        if self._anim_driver:
+            self._anim_driver.toggle_pause()
+
+    def anim_set_cluster(self, name: str) -> None:
+        if self._anim_driver:
+            self._anim_driver.set_cluster(name)
+
+    def anim_set_fps_override(self, fps: Optional[float]) -> None:
+        if self._anim_driver:
+            self._anim_driver.set_fps_override(fps)
+
+    def anim_list_clusters(self) -> List[str]:
+        if self._anim_driver:
+            return self._anim_driver.list_clusters()
+        return []
+
+    def notify_state(self, state: str) -> None:
+        if self._anim_driver:
+            self._anim_driver.handle_state(state)
 
     def _handle_five_clicks(self) -> None:
         handled = False

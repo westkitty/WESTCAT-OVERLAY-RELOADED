@@ -1,0 +1,115 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run: WESTCAT app (bootstrap)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "app"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: WESTCAT overlay (window)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "app.window_main"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "QT_QPA_PLATFORM": "wayland",
+          "QT_ENABLE_HIGHDPI_SCALING": "1"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: WESTCAT overlay (player demo)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "app.player_demo"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "QT_QPA_PLATFORM": "wayland",
+          "QT_ENABLE_HIGHDPI_SCALING": "1"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: WESTCAT overlay (poll demo)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "app.poll_overlay"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "QT_QPA_PLATFORM": "wayland",
+          "QT_ENABLE_HIGHDPI_SCALING": "1"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: WESTCAT overlay (Bryan demo)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "app.bryan_demo"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "QT_QPA_PLATFORM": "wayland",
+          "QT_ENABLE_HIGHDPI_SCALING": "1"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: WESTCAT overlay (Bryan duo demo)",
+      "type": "shell",
+      "command": "PYTHONPATH=. QT_QPA_PLATFORM=wayland QT_ENABLE_HIGHDPI_SCALING=1 ./.venv/bin/python -m app.bryan_duo"
+    },
+    {
+      "label": "run:app",
+      "type": "shell",
+      "command": "PYTHONPATH=. QT_QPA_PLATFORM=wayland QT_ENABLE_HIGHDPI_SCALING=1 ./.venv/bin/python -m app.bryan_duo"
+    },
+    {
+      "label": "run:probe",
+      "type": "shell",
+      "command": "PYTHONPATH=. ./.venv/bin/python tools/probe_anim_sync.py"
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "if command -v ./.venv/bin/pytest >/dev/null 2>&1; then PYTHONPATH=. ./.venv/bin/pytest -q; else echo 'pytest not installed (skipping)'; fi"
+    },
+    {
+      "label": "run:builder",
+      "type": "shell",
+      "command": "PYTHONPATH=. ./.venv/bin/python tools/cluster_builder.py"
+    }
+  ]
+}
