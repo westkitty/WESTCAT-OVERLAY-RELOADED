@@ -1,0 +1,9 @@
+.venv/
+logs/
+__pycache__/
+artifacts/
+worktrees/
+worktrees-old/
+assets/_incoming/
+assets/transparent_png_frames.zip
+*.log
